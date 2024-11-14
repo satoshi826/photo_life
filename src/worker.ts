@@ -53,18 +53,31 @@ const main = async(canvas: HTMLCanvasElement) => {
   })
   core.gl.blendFunc(core.gl.ONE, core.gl.ONE)
 
-  const texW = 400
+  const texW = 500
   const texH = 400
+  const vectorPixelRatio = 1.0 / 16
 
   const updateRenderers = new PingPong(core, {width: texW, height: texH, screenFit: false, backgroundColor: [0, 0, 0, 0]})
-  const vectorRenderer = new Renderer(core, {frameBuffer: [RGBA32F], pixelRatio: 0.125})
+  const vectorRenderer = new Renderer(core, {frameBuffer: [RGBA32F], pixelRatio: vectorPixelRatio})
+  const microVectorRenderer = new Renderer(core, {frameBuffer: [RGBA32F], pixelRatio: 4 * vectorPixelRatio})
+
   const renderer = new Renderer(core)
 
-  const dataTexture = core.createTexture({
+  const vectorTexture = core.createTexture({
     array: new Float32Array([...Array(texW * texH)].flatMap((_, i) => {
       const r = i / (texW * texH)
-      const t = r * 20000
-      return [r * Math.cos(t), r * Math.sin(t), 0.002 * Math.cos(t), 0.002 * Math.sin(t)]
+      const t = r * 2000
+      return [r * Math.cos(t), r * Math.sin(t), 0.000 * Math.cos(t), 0.000 * Math.sin(t)]
+    })),
+    width : texW,
+    height: texH
+  })
+
+  const colorTexture = core.createTexture({
+    array: new Float32Array([...Array(texW * texH)].flatMap((_, i) => {
+      // const r = i / (texW * texH)
+      // const t = r * 1000000
+      return [1, 1, 1, 0.0]
     })),
     width : texW,
     height: texH
@@ -84,15 +97,18 @@ const main = async(canvas: HTMLCanvasElement) => {
       a_position    : 'vec2',
       a_instanced_uv: 'vec2'
     },
-    uniformTypes: {u_resolution: 'vec2'},
-    texture     : {t_data: dataTexture},
-    vert        : /* glsl */ `
+    uniformTypes: {
+      u_resolution: 'vec2',
+      u_size      : 'float'
+    },
+    texture: {t_data: vectorTexture},
+    vert   : /* glsl */ `
       out vec2 loc_pos;
       void main() {
         vec2 aspectRatio = u_resolution / min(u_resolution.x, u_resolution.y);
         vec2 pos = texture(t_data, a_instanced_uv).xy / aspectRatio;
         loc_pos = a_position / aspectRatio;
-        gl_Position = vec4(0.18 * loc_pos.xy + 1.0 * pos, 1.0, 1.0);
+        gl_Position = vec4(u_size * loc_pos.xy + pos, 1.0, 1.0);
     }`,
     frag: /* glsl */`
       in vec2 loc_pos;
@@ -100,13 +116,11 @@ const main = async(canvas: HTMLCanvasElement) => {
       void main() {
         float d = length(loc_pos);
         float power = min(1.0/(d), 1.0);
-        power = d < 0.1 ? -1.0 * power : power;
+        power = d < 0.001 / u_size ? -2.0*power : power;
         vec2 power_vec = power * normalize(loc_pos);
         o_color = vec4(power_vec, 0.0, 1.0);
       }`
   })
-
-  const blurPass = getBlurPass(core, vectorRenderer.renderTexture[0])
 
   const updateProgram = new Program(core, {
     id            : 'update',
@@ -119,8 +133,9 @@ const main = async(canvas: HTMLCanvasElement) => {
       u_delta     : 'float'
     },
     texture: {
-      t_data  : dataTexture,
-      t_vector: vectorRenderer.renderTexture[0]
+      t_data       : vectorTexture,
+      t_vector     : vectorRenderer.renderTexture[0],
+      t_microVector: microVectorRenderer.renderTexture[0]
     },
     vert: /* glsl */ `
       out vec2 v_aspectRatio;
@@ -139,11 +154,15 @@ const main = async(canvas: HTMLCanvasElement) => {
         vec2 pos = data.rg;
         vec2 vel = data.ba;
         vec2 uv = 0.5 * (pos / v_aspectRatio + 1.0);
+
         vec4 vector = texture(t_vector, uv);
-        vec2 acc = -vector.rg * 0.0000001 * u_delta;
-        float velPower = max(2000.0*length(vel), 1.0);
-        vec2 newVel =  (acc / velPower) + 0.995 * vel;
-        vec2 newPos = mod(newVel + pos + v_aspectRatio, 2.0 * v_aspectRatio) - v_aspectRatio;
+        vec4 microVector = texture(t_microVector, uv);
+        vec4 sumVector = vector + 0.05 * microVector;
+
+        vec2 acc = -sumVector.rg * 0.000000005 * u_delta;
+        float velPower = max(1000.0*length(vel), 1.0);
+        vec2 newVel =  (acc / velPower) + 0.999 * vel;
+        vec2 newPos = mod(newVel * v_aspectRatio + pos + v_aspectRatio, 2.0 * v_aspectRatio) - v_aspectRatio;
         vec4 result = vec4(newPos, newVel);
         o_color = vec4(result);
       }`
@@ -156,7 +175,7 @@ const main = async(canvas: HTMLCanvasElement) => {
       a_textureCoord: 'vec2'
     },
     texture: {
-      t_data  : dataTexture,
+      t_data  : vectorTexture,
       t_vector: vectorRenderer.renderTexture[0]
     },
     vert: /* glsl */ `
@@ -185,7 +204,7 @@ const main = async(canvas: HTMLCanvasElement) => {
       a_instanced_uv: 'vec2'
     },
     uniformTypes: {u_resolution: 'vec2'},
-    texture     : {t_data: dataTexture},
+    texture     : {t_data: vectorTexture},
     vert        : /* glsl */ `
       out vec2 loc_pos;
       out vec3 color;
@@ -194,7 +213,7 @@ const main = async(canvas: HTMLCanvasElement) => {
         return c.z + c.y * (rgb-0.5)*(1.0-abs(2.0*c.z-1.0));
       }
       void main() {
-        color = hsl2rgb(vec3(float(gl_InstanceID+20000) * 0.00002, 1.0, 0.15));
+        color = hsl2rgb(vec3(float(gl_InstanceID+20000) * 0.00002, 1.0, 0.1));
         vec2 aspectRatio = u_resolution / min(u_resolution.x, u_resolution.y);
         vec2 pos = texture(t_data, a_instanced_uv).xy / aspectRatio;
         loc_pos = a_position / aspectRatio;
@@ -227,7 +246,10 @@ const main = async(canvas: HTMLCanvasElement) => {
     renderer.clear()
     updateRenderers.write.clear()
     vectorRenderer.clear()
+    vectorProgram.setUniform({u_size: 0.25})
     vectorRenderer.render(particleVao, vectorProgram)
+    vectorProgram.setUniform({u_size: 0.05})
+    microVectorRenderer.render(particleVao, vectorProgram)
     renderer.render(particleVao, renderProgram)
     // renderer.render(planeVao, debugProgram)
 
@@ -271,9 +293,9 @@ function circle(segments = 30, radius = 0.5) {
   }
 }
 
-const getBlurPass = (core: Core, targetTex : TextureWithInfo) => {
+const getBlurPass = (core: Core, targetTex : TextureWithInfo, pixelRatio = 1) => {
 
-  const basePixelRatio = core.pixelRatio
+  const basePixelRatio = core.pixelRatio * pixelRatio
   const pixelRatios = [1, 0.5, 0.25, 0.125, 0.03125]
 
   const renderers = pixelRatios.map(pixelRatio => [
@@ -317,7 +339,7 @@ const blurEffect = (core: Core, texture: TextureWithInfo) => new Program(core, {
   },
   uniformTypes: {
     u_isHorizontal : 'bool',
-    u_invPixelRatio: 'int'
+    u_invPixelRatio: 'float'
   },
   texture: {
     t_preBlurTexture: texture
@@ -339,9 +361,9 @@ const blurEffect = (core: Core, texture: TextureWithInfo) => new Program(core, {
         }
 
         void main() {
-          int sampleStep = 2 * u_invPixelRatio;
+          int sampleStep = int(2.0 * u_invPixelRatio);
 
-          ivec2 coord =   u_invPixelRatio * ivec2(gl_FragCoord.xy);
+          ivec2 coord =   ivec2(u_invPixelRatio * gl_FragCoord.xy);
           ivec2 size = textureSize(t_preBlurTexture, 0);
           vec3 sum = weights[0] * texelFetch(t_preBlurTexture, coord, 0).rgb;
 
