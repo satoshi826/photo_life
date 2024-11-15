@@ -53,32 +53,26 @@ const main = async(canvas: HTMLCanvasElement) => {
   })
   core.gl.blendFunc(core.gl.ONE, core.gl.ONE)
 
-  const texW = 500
-  const texH = 400
-  const vectorPixelRatio = 1.0 / 16
+  const texW = 250
+  const texH = 250
+  const vectorPixelRatio = 1.0 / 8
 
   const updateRenderers = new PingPong(core, {width: texW, height: texH, screenFit: false, backgroundColor: [0, 0, 0, 0]})
-  const vectorRenderer = new Renderer(core, {frameBuffer: [RGBA32F], pixelRatio: vectorPixelRatio})
-  const microVectorRenderer = new Renderer(core, {frameBuffer: [RGBA32F], pixelRatio: 4 * vectorPixelRatio})
+  const vectorRenderer = new Renderer(core, {frameBuffer: [RGBA16F, RGBA16F, RGBA16F], pixelRatio: vectorPixelRatio})
 
   const renderer = new Renderer(core)
 
   const vectorTexture = core.createTexture({
     array: new Float32Array([...Array(texW * texH)].flatMap((_, i) => {
       const r = i / (texW * texH)
-      const t = r * 2000
+      const t = r * 800
       return [r * Math.cos(t), r * Math.sin(t), 0.000 * Math.cos(t), 0.000 * Math.sin(t)]
     })),
     width : texW,
     height: texH
   })
-
   const colorTexture = core.createTexture({
-    array: new Float32Array([...Array(texW * texH)].flatMap((_, i) => {
-      // const r = i / (texW * texH)
-      // const t = r * 1000000
-      return [1, 1, 1, 0.0]
-    })),
+    array : new Float32Array([...Array(texW * texH)].flatMap((_, i) => [...hsvToRgb((i / 200) + 0, 1, 0.5), 1.0])),
     width : texW,
     height: texH
   })
@@ -101,26 +95,37 @@ const main = async(canvas: HTMLCanvasElement) => {
       u_resolution: 'vec2',
       u_size      : 'float'
     },
-    texture: {t_data: vectorTexture},
-    vert   : /* glsl */ `
-      out vec2 loc_pos;
+    texture: {
+      t_data : vectorTexture,
+      t_color: colorTexture
+    },
+    vert: /* glsl */ `
+      out vec2 v_pos;
+      out vec3 v_color;
       void main() {
         vec2 aspectRatio = u_resolution / min(u_resolution.x, u_resolution.y);
         vec2 pos = texture(t_data, a_instanced_uv).xy / aspectRatio;
-        loc_pos = a_position / aspectRatio;
-        gl_Position = vec4(u_size * loc_pos.xy + pos, 1.0, 1.0);
+        v_color = texture(t_color, a_instanced_uv).rgb;
+        v_pos = a_position / aspectRatio;
+        gl_Position = vec4(u_size * v_pos.xy + pos, 1.0, 1.0);
     }`,
     frag: /* glsl */`
-      in vec2 loc_pos;
-      out vec4 o_color;
+      in vec2 v_pos;
+      in vec3 v_color;
+      layout (location = 0) out vec4 o_r;
+      layout (location = 1) out vec4 o_g;
+      layout (location = 2) out vec4 o_b;
       void main() {
-        float d = length(loc_pos);
+        float d = length(v_pos);
         float power = min(1.0/(d), 1.0);
-        power = d < 0.001 / u_size ? -2.0*power : power;
-        vec2 power_vec = power * normalize(loc_pos);
-        o_color = vec4(power_vec, 0.0, 1.0);
+        power = d < 0.01 / u_size ? -power : power;
+        vec2 power_vec = power * normalize(v_pos);
+        o_r = vec4(v_color.r * power_vec, 0.0, 1.0);
+        o_g = vec4(v_color.g * power_vec, 0.0, 1.0);
+        o_b = vec4(v_color.b * power_vec, 0.0, 1.0);
       }`
   })
+  vectorProgram.setUniform({u_size: 0.25})
 
   const updateProgram = new Program(core, {
     id            : 'update',
@@ -133,9 +138,11 @@ const main = async(canvas: HTMLCanvasElement) => {
       u_delta     : 'float'
     },
     texture: {
-      t_data       : vectorTexture,
-      t_vector     : vectorRenderer.renderTexture[0],
-      t_microVector: microVectorRenderer.renderTexture[0]
+      t_data : vectorTexture,
+      t_color: colorTexture,
+      t_r    : vectorRenderer.renderTexture[0],
+      t_g    : vectorRenderer.renderTexture[1],
+      t_b    : vectorRenderer.renderTexture[2]
     },
     vert: /* glsl */ `
       out vec2 v_aspectRatio;
@@ -151,18 +158,21 @@ const main = async(canvas: HTMLCanvasElement) => {
       out vec4 o_color;
       void main() {
         vec4 data = texture(t_data, v_uv);
+        vec4 color = texture(t_color, v_uv);
         vec2 pos = data.rg;
         vec2 vel = data.ba;
         vec2 uv = 0.5 * (pos / v_aspectRatio + 1.0);
 
-        vec4 vector = texture(t_vector, uv);
-        vec4 microVector = texture(t_microVector, uv);
-        vec4 sumVector = vector + 0.05 * microVector;
+        vec4 r = texture(t_r, uv);
+        vec4 g = texture(t_g, uv);
+        vec4 b = texture(t_b, uv);
 
-        vec2 acc = -sumVector.rg * 0.000000005 * u_delta;
-        float velPower = max(1000.0*length(vel), 1.0);
-        vec2 newVel =  (acc / velPower) + 0.999 * vel;
-        vec2 newPos = mod(newVel * v_aspectRatio + pos + v_aspectRatio, 2.0 * v_aspectRatio) - v_aspectRatio;
+        vec2 acc = r.xy * color.g + -0.5*b.xy * color.r + 2.0*g.xy * color.b;
+        acc *= -0.000000005 * u_delta;
+
+        float velPower = max(50.0*length(vel), 1.0);
+        vec2 newVel =  (acc / velPower) + 0.9995 * vel;
+        vec2 newPos = mod(newVel + pos + v_aspectRatio, 2.0 * v_aspectRatio) - v_aspectRatio;
         vec4 result = vec4(newPos, newVel);
         o_color = vec4(result);
       }`
@@ -204,8 +214,11 @@ const main = async(canvas: HTMLCanvasElement) => {
       a_instanced_uv: 'vec2'
     },
     uniformTypes: {u_resolution: 'vec2'},
-    texture     : {t_data: vectorTexture},
-    vert        : /* glsl */ `
+    texture     : {
+      t_data : vectorTexture,
+      t_color: colorTexture
+    },
+    vert: /* glsl */ `
       out vec2 loc_pos;
       out vec3 color;
       vec3 hsl2rgb( in vec3 c ){
@@ -213,11 +226,11 @@ const main = async(canvas: HTMLCanvasElement) => {
         return c.z + c.y * (rgb-0.5)*(1.0-abs(2.0*c.z-1.0));
       }
       void main() {
-        color = hsl2rgb(vec3(float(gl_InstanceID+20000) * 0.00002, 1.0, 0.1));
+        color = texture(t_color, a_instanced_uv).rgb;
         vec2 aspectRatio = u_resolution / min(u_resolution.x, u_resolution.y);
         vec2 pos = texture(t_data, a_instanced_uv).xy / aspectRatio;
         loc_pos = a_position / aspectRatio;
-        gl_Position = vec4(0.004 * loc_pos.xy + pos, 1.0, 1.0);
+        gl_Position = vec4(0.004 * loc_pos.xy + 1.0*pos, 1.0, 1.0);
     }`,
     frag: /* glsl */`
       in vec3 color;
@@ -246,14 +259,11 @@ const main = async(canvas: HTMLCanvasElement) => {
     renderer.clear()
     updateRenderers.write.clear()
     vectorRenderer.clear()
-    vectorProgram.setUniform({u_size: 0.25})
     vectorRenderer.render(particleVao, vectorProgram)
-    vectorProgram.setUniform({u_size: 0.05})
-    microVectorRenderer.render(particleVao, vectorProgram)
     renderer.render(particleVao, renderProgram)
     // renderer.render(planeVao, debugProgram)
 
-    updateProgram.setUniform({u_delta: delta * 1.0})
+    updateProgram.setUniform({u_delta: delta})
     updateRenderers.write.render(planeVao, updateProgram)
     updateRenderers.swap()
     updateProgram.setTexture({t_data: updateRenderers.read.renderTexture[0]})
@@ -293,101 +303,18 @@ function circle(segments = 30, radius = 0.5) {
   }
 }
 
-const getBlurPass = (core: Core, targetTex : TextureWithInfo, pixelRatio = 1) => {
+function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
+  const c = v * s
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = v - c
 
-  const basePixelRatio = core.pixelRatio * pixelRatio
-  const pixelRatios = [1, 0.5, 0.25, 0.125, 0.03125]
+  const [r, g, b] =
+      h < 60 ? [c, x, 0] :
+        h < 120 ? [x, c, 0] :
+          h < 180 ? [0, c, x] :
+            h < 240 ? [0, x, c] :
+              h < 300 ? [x, 0, c] :
+                [c, 0, x]
 
-  const renderers = pixelRatios.map(pixelRatio => [
-    new Renderer(core, {frameBuffer: [RGBA16F], pixelRatio, backgroundColor: [0, 0, 0, 0]}),
-    new Renderer(core, {frameBuffer: [RGBA16F], pixelRatio, backgroundColor: [0, 0, 0, 0]})
-  ])
-
-  const blurProgram = blurEffect(core, targetTex)
-  const planeVao = new Vao(core, {
-    id: 'blurPlane',
-    ...plane2D()
-  })
-
-  return {
-    render: () => {
-      renderers.forEach((renderer, index) => {
-        renderer[0].clear()
-        renderer[1].clear()
-        const preRenderer = index === 0 ? null : renderers[index - 1]
-        const baseTex = preRenderer?.[1].renderTexture[0] ?? targetTex
-        const invPixelRatio = (preRenderer?.[0].pixelRatio ?? basePixelRatio) / renderer[0].pixelRatio
-        blurProgram.setUniform({u_invPixelRatio: invPixelRatio})
-        blurProgram.setUniform({u_isHorizontal: 1})
-        blurProgram.setTexture({t_preBlurTexture: baseTex})
-        renderer[0].render(planeVao, blurProgram)
-        blurProgram.setUniform({u_invPixelRatio: 1})
-        blurProgram.setUniform({u_isHorizontal: 0})
-        blurProgram.setTexture({t_preBlurTexture: renderer[0].renderTexture[0]})
-        renderer[1].render(planeVao, blurProgram)
-      })
-    },
-    results: renderers.map(renderer => renderer[1].renderTexture[0])
-  }
+  return [r + m, g + m, b + m]
 }
-
-const blurEffect = (core: Core, texture: TextureWithInfo) => new Program(core, {
-  id            : 'blurEffect',
-  attributeTypes: {
-    a_position    : 'vec2',
-    a_textureCoord: 'vec2'
-  },
-  uniformTypes: {
-    u_isHorizontal : 'bool',
-    u_invPixelRatio: 'float'
-  },
-  texture: {
-    t_preBlurTexture: texture
-  },
-  vert: /* glsl */ `
-        out vec2 v_uv;
-        void main() {
-          v_uv  = a_textureCoord;
-          gl_Position = vec4(a_position, 0.0, 1.0);
-        }`,
-  frag: /* glsl */`
-        in vec2 v_uv;
-        out vec4 o_color;
-
-        const float[5] weights = float[](0.2270270, 0.1945945, 0.1216216, 0.0540540, 0.0162162);
-
-        ivec2 clampCoord(ivec2 coord, ivec2 size) {
-          return max(min(coord, size - 1), 0);
-        }
-
-        void main() {
-          int sampleStep = int(2.0 * u_invPixelRatio);
-
-          ivec2 coord =   ivec2(u_invPixelRatio * gl_FragCoord.xy);
-          ivec2 size = textureSize(t_preBlurTexture, 0);
-          vec3 sum = weights[0] * texelFetch(t_preBlurTexture, coord, 0).rgb;
-
-          ivec2 offsetUnit = u_isHorizontal ? ivec2(1, 0) : ivec2(0, 1);
-          ivec2 offset;
-
-          offset = offsetUnit * sampleStep * 1;
-
-          sum += weights[1] * texelFetch(t_preBlurTexture, clampCoord(coord + offset, size), 0).rgb;
-          sum += weights[1] * texelFetch(t_preBlurTexture, clampCoord(coord - offset, size), 0).rgb;
-
-          offset = offsetUnit * sampleStep * 2;
-          sum += weights[2] * texelFetch(t_preBlurTexture, clampCoord(coord + offset, size), 0).rgb;
-          sum += weights[2] * texelFetch(t_preBlurTexture, clampCoord(coord - offset, size), 0).rgb;
-
-          offset = offsetUnit * sampleStep * 3;
-          sum += weights[3] * texelFetch(t_preBlurTexture, clampCoord(coord + offset, size), 0).rgb;
-          sum += weights[3] * texelFetch(t_preBlurTexture, clampCoord(coord - offset, size), 0).rgb;
-
-          offset = offsetUnit * sampleStep * 4;
-          sum += weights[4] * texelFetch(t_preBlurTexture, clampCoord(coord + offset, size), 0).rgb;
-          sum += weights[4] * texelFetch(t_preBlurTexture, clampCoord(coord - offset, size), 0).rgb;
-
-          o_color = vec4(sum, 1.0);
-        }`
-})
-
