@@ -3,6 +3,7 @@ export default {}
 
 // type ImageData = {width: number, height: number, data: Array<number>}
 // const imageState = new State<ImageData | null>(null)
+const cameraState = new State({x: 0, y: 0, z: 1})
 const mouseState = new State({x: 0, y: 0})
 const resizeState = new State({width: 1, height: 1})
 
@@ -53,8 +54,8 @@ const main = async(canvas: HTMLCanvasElement) => {
   })
   core.gl.blendFunc(core.gl.ONE, core.gl.ONE)
 
-  const texW = 250
-  const texH = 250
+  const texW = 100
+  const texH = 100
   const vectorPixelRatio = 1.0 / 8
 
   const updateRenderers = new PingPong(core, {width: texW, height: texH, screenFit: false, backgroundColor: [0, 0, 0, 0]})
@@ -66,13 +67,13 @@ const main = async(canvas: HTMLCanvasElement) => {
     array: new Float32Array([...Array(texW * texH)].flatMap((_, i) => {
       const r = i / (texW * texH)
       const t = r * 800
-      return [r * Math.cos(t), r * Math.sin(t), 0.000 * Math.cos(t), 0.000 * Math.sin(t)]
+      return [r * Math.cos(t), r * Math.sin(t), 0, 0]
     })),
     width : texW,
     height: texH
   })
   const colorTexture = core.createTexture({
-    array : new Float32Array([...Array(texW * texH)].flatMap((_, i) => [...hsvToRgb((i / 200) + 0, 1, 0.5), 1.0])),
+    array : new Float32Array([...Array(texW * texH)].flatMap((_, i) => [...hsvToRgb((i / 10) + 0, 1, 0.5), 1.0])),
     width : texW,
     height: texH
   })
@@ -118,7 +119,7 @@ const main = async(canvas: HTMLCanvasElement) => {
       void main() {
         float d = length(v_pos);
         float power = min(1.0/(d), 1.0);
-        power = d < 0.01 / u_size ? -power : power;
+        power = d < 0.0 ? -power : power;
         vec2 power_vec = power * normalize(v_pos);
         o_r = vec4(v_color.r * power_vec, 0.0, 1.0);
         o_g = vec4(v_color.g * power_vec, 0.0, 1.0);
@@ -166,12 +167,12 @@ const main = async(canvas: HTMLCanvasElement) => {
         vec4 r = texture(t_r, uv);
         vec4 g = texture(t_g, uv);
         vec4 b = texture(t_b, uv);
-
-        vec2 acc = r.xy * color.g + -0.5*b.xy * color.r + 2.0*g.xy * color.b;
-        acc *= -0.000000005 * u_delta;
-
-        float velPower = max(50.0*length(vel), 1.0);
-        vec2 newVel =  (acc / velPower) + 0.9995 * vel;
+        // vec2 acc = 4.0 * r.xy * (color.g - color.b) + 0.5 * b.xy * color.r + -1.0 * (color.b - g.xy) * (color.b - color.r);
+        vec2 acc = -(r.xy + g.xy + b.xy);
+        acc *= 0.000002 * u_delta;
+        // float velPower = max(2000.0*length(vel), 1.0);
+        // float velPower = length(vel);
+        vec2 newVel =  (acc);
         vec2 newPos = mod(newVel + pos + v_aspectRatio, 2.0 * v_aspectRatio) - v_aspectRatio;
         vec4 result = vec4(newPos, newVel);
         o_color = vec4(result);
@@ -213,8 +214,11 @@ const main = async(canvas: HTMLCanvasElement) => {
       a_position    : 'vec2',
       a_instanced_uv: 'vec2'
     },
-    uniformTypes: {u_resolution: 'vec2'},
-    texture     : {
+    uniformTypes: {
+      u_resolution: 'vec2',
+      u_camera    : 'vec3'
+    },
+    texture: {
       t_data : vectorTexture,
       t_color: colorTexture
     },
@@ -230,7 +234,7 @@ const main = async(canvas: HTMLCanvasElement) => {
         vec2 aspectRatio = u_resolution / min(u_resolution.x, u_resolution.y);
         vec2 pos = texture(t_data, a_instanced_uv).xy / aspectRatio;
         loc_pos = a_position / aspectRatio;
-        gl_Position = vec4(0.004 * loc_pos.xy + 1.0*pos, 1.0, 1.0);
+        gl_Position = vec4(0.01 * loc_pos.xy + u_camera.z * pos - u_camera.xy, 1.0, 1.0);
     }`,
     frag: /* glsl */`
       in vec3 color;
@@ -255,6 +259,10 @@ const main = async(canvas: HTMLCanvasElement) => {
     renderProgram.setUniform({u_resolution: [width, height]})
   })
 
+  cameraState.on((camera) => {
+    renderProgram.setUniform({u_camera: [camera.x, camera.y, camera.z]})
+  })
+
   const animation = new Loop({callback: ({delta}) => {
     renderer.clear()
     updateRenderers.write.clear()
@@ -274,9 +282,9 @@ const main = async(canvas: HTMLCanvasElement) => {
 }
 
 onmessage = async({data}) => {
-  const {canvas, mouse, resize} = data
+  const {canvas, mouse, resize, camera} = data
   if (mouse) mouseState.set(mouse)
-  // if (image) imageState.set(image)
+  if (camera) cameraState.set(camera)
   if (resize) resizeState.set(resize)
   if (canvas) main(canvas)
 }
